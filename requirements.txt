@@ -1,0 +1,8 @@
+numpy
+scipy
+pydicom
+nibabel
+networkx
+traits
+nipype
+configobj

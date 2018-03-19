@@ -492,7 +492,7 @@ class NiiWrangler(BaseInterface):
 
 class JsonInfoInputSpec(BaseInterfaceInputSpec):
     files = InputMultiPath(
-            traits.Either(traits.List(File(exists=True)),File(exists=True)),
+            traits.Either(traits.List(File(exists=True)), File(exists=True)),
             mandatory=True,
             desc="a list of json files from which to extract data",
             copyfile=False)

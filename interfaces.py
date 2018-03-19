@@ -13,6 +13,9 @@ from duke_siemens.util_dicom_siemens import read as read_siemens_shadow
 from hcpre.util import *
 from hcpre.config import *
 
+
+import tarfile
+
 class HCDcm2nii(d2n.Dcm2nii):
     """ We override to fix a bug in output listing... """
     def _parse_stdout(self, stdout):
@@ -145,6 +148,7 @@ class DicomInfo(BaseInterface):
                     by_series[s_num]["orientation"] = orient
                 # try to get siemens shadow header
                 try:
+                    tar = tarfile.open
                     ss = read_siemens_shadow(f)[0]
                 except Exception, e:
                     pass
@@ -499,7 +503,7 @@ class JsonInfoInputSpec(BaseInterfaceInputSpec):
 
 class JsonInfoOutputSpec(TraitedSpec):
     info = traits.List(traits.Dict(),
-            desc="an ordered list of dicts, all in the same directory.")
+            desc= "an ordered list of dicts, all in the same directory.")
 
 class JsonInfo(BaseInterface):
     input_spec = JsonInfoInputSpec
@@ -510,40 +514,53 @@ class JsonInfo(BaseInterface):
         self.info = []
 
     def _run_interface(self, runtime):
-        import dicom
+        import json
+        import os
+        import tarfile
+        from hcpre.workflows import HCPrepWorkflow
         files = self.inputs.files
         by_series = {}
         self.info = []
         for f in files:
-            d = dicom.read_file(f)
+            base_file_name = os.path.basename(file).split('.')[0]
+            scan_type = file.split('/')[-2]
+            ses = file.split('/')[-3]
+            subj = file.split('/')[-4]
+            sub_dir = HCPrepWorkflow.get_conf("general", "subject_dir")
+            tar_path = sub_dir + '/sourcedata/' +subj + '/' + ses + '/' + scan_type + '/'
+            tar_repo = tar_path + base_file_name+'.tgz'
+            open_tar = tarfile.open(tar_repo)
+            tar_file = open_tar.getnames()[0]
+            open_tar.extract(tar_file, path=tar_path)
+
+            read_file = open(f, 'r')
+            j = json.load(read_file)
             try: 
-                s_num = d.SeriesNumber
+                s_num = j["SeriesNumber"]
                 s_num = int(s_num)
             except Exception, e:
                 raise e
             if not s_num in by_series:
                 by_series[s_num] = {
                     "series_num": s_num,
-                    "series_desc": getattr(d,"SeriesDescription",None),
-                    "protocol_name": getattr(d,"ProtocolName",None),
+                    "series_desc": j["SeriesDescription"],
+                    "protocol_name": j["ProtocolName"]
                 }
-                if [0x19,0x1018] in d and \
-                        "description" in dir(d[0x19,0x1018]) and \
-                        "RealDwellTime" in d[0x19,0x1018].description():
+                if "DwellTime" in j:
                     try:
-                        by_series[s_num]["RealDwellTime"] = float(d[0x19,0x1018].value)
+                        by_series[s_num]["RealDwellTime"] = j["DwellTime"]*1000000000
                     except Exception, e:
                         pass # don't die
-                it = getattr(d,"ImageType",None)
+                it = j["ImageType"]
                 if it:
-                    if not isinstance(it,str):
+                    if not isinstance(it, str):
                         it = list(it)
                     by_series[s_num]["image_type"] = it
-                ipped = getattr(d,"InPlanePhaseEncodingDirection", None)
+                ipped = j["InPlanePhaseEncodingDirectionDICOM"]
                 if ipped:
                     by_series[s_num]["ipp_encoding_direction"] = ipped
                 # ep echo spacing ingredients
-                bpppe = d.get((0x0019,0x1028), None)
+                bpppe = j["BandwidthPerPixelPhaseEncode"]
                 if bpppe:
                     try:
                         bpppe = float(bpppe.value)
@@ -551,28 +568,31 @@ class JsonInfo(BaseInterface):
                         pass
                     else:
                         by_series[s_num]["bw_per_pix_phase_encode"] = bpppe
-                acq_mat = getattr(d, "AcquisitionMatrix", None)
-                if acq_mat and len(acq_mat) == 4:
-                    # acq mat text gets turned into this struct.
-                    # n will be in 0/1 (other index will == 0), m will be in 2/3
-                    by_series[s_num]["acq_matrix_n"] = acq_mat[0] or acq_mat[1]
-                    by_series[s_num]["acq_matrix_m"] = acq_mat[2] or acq_mat[3]
+
+                # acquisition matrices text gets turned into this struct.
+                # n will be in 0/1 (other index will == 0), m will be in 2/3
+                by_series[s_num]["acq_matrix_n"] = j["AcquisitionMatrixPE"]
+                by_series[s_num]["acq_matrix_m"] = j["ReconMatrixPE"]
+
                 # try to get orientation from header
-                orient = orientation_from_dcm_header(d)
+                orient = orientation_from_json_header(j)
+
                 if orient:
                     by_series[s_num]["orientation"] = orient
+
                 # try to get siemens shadow header
                 try:
-                    ss = read_siemens_shadow(f)[0]
+                    ss = read_siemens_shadow(tar_path + '/' + tar_file)[0]
                 except Exception, e:
                     pass
                 else:
                     siemens_keys = ["in_plane_rotation", "polarity_swap"]
-                    by_series[s_num].update(dict([(k,v) for k,v in ss.iteritems() if k in siemens_keys]))
+                    by_series[s_num].update(dict([(k, v) for k,v in ss.iteritems() if k in siemens_keys]))
+                    
             bs = by_series[s_num]
             # collect all of the unique EchoTimes per series
             try:
-                et = getattr(d,"EchoTime",None)
+                et = j["EchoTime"]*1000
                 if et:
                     et = float(et)
                     if not "echo_times" in bs:
@@ -614,8 +634,8 @@ class BIDSWranglerInputSpec(BaseInterfaceInputSpec):
             mandatory=False,
             usedefault=True,
             desc="keys are any member of SCAN_TYPES, values are lists of series\
-                  descriptions as recorded in DICOM headers.")
-    dicom_info = traits.List(
+                  descriptions as recorded in JSON headers.")
+    json_info = traits.List(
             mandatory=True,
             desc="one dict for each series in the session, in the order they were\
                   run. each dict should contain at least the series_num (int) and\
@@ -732,7 +752,7 @@ class BIDSWrangler(BaseInterface):
         import operator
         nii_files = self.inputs.nii_files
         smap = self.inputs.series_map
-        dinfo = self.inputs.dicom_info
+        jinfo = self.inputs.json_info
         block_averaging = self.inputs.block_struct_averaging
         s_num_reg = re.compile(".*s(\d+)a(?!.*/)") # sux to use filename. make more robust if needed.
         nii_by_series = {}
@@ -756,35 +776,35 @@ class BIDSWrangler(BaseInterface):
         # add nifti names to the dicts
         m_count = 0
         for sn, fn in nii_by_series.iteritems():
-            m = filter(lambda x: x.get("series_num",-1) == sn, dinfo)
+            m = filter(lambda x: x.get("series_num",-1) == sn, jinfo)
             if not m:
                 continue
             m_count += 1
             m[0]["nifti_file"] = fn
-        if not m_count == len(dinfo):
-            raise ValueError("incorrect number of nifti->series matches (%d/%d)" % (m_count, len(dinfo)))
+        if not m_count == len(jinfo):
+            raise ValueError("incorrect number of nifti->series matches (%d/%d)" % (m_count, len(jinfo)))
         # time for some data wrangling
         nf = "nifti_file"
         sd = "series_desc"
         it = "image_type"
-        t1fs = [d for d in filter(lambda x: sd in x and x[sd] in smap.get("t1",[]), dinfo) if nf in d]
-        t2fs = [d for d in filter(lambda x: sd in x and x[sd] in smap.get("t2",[]), dinfo) if nf in d]
+        t1fs = [d for d in filter(lambda x: sd in x and x[sd] in smap.get("t1", []), jinfo) if nf in d]
+        t2fs = [d for d in filter(lambda x: sd in x and x[sd] in smap.get("t2", []), jinfo) if nf in d]
         if block_averaging:
             t1fs = [t1fs[0]]
             t2fs = [t2fs[0]]
         self.t1_files = [d[nf] for d in t1fs]
         self.t2_files = [d[nf] for d in t2fs]
-        bs = [d for d in filter(lambda x: sd in x and x[sd] in smap.get("bold",[]), dinfo) if nf in d]
+        bs = [d for d in filter(lambda x: sd in x and x[sd] in smap.get("bold",[]), jinfo) if nf in d]
         self.bolds = [d[nf] for d in bs]
-        self.sbrefs = [d[nf] for d in filter(lambda x: sd in x and x[sd] in smap.get("bold_sbref",[]), dinfo) if nf in d]
+        self.sbrefs = [d[nf] for d in filter(lambda x: sd in x and x[sd] in smap.get("bold_sbref",[]), jinfo) if nf in d]
         # for now, we only support one se fieldmap pair. In the future, we'll implement
         # a more flexible policy here. This is actually really crappy... but the user can always
         # flip the unwarpdir through config :/
         s_policy = self.inputs.ep_fieldmap_selection
         pos_types = reduce(operator.add, [smap.get(k, []) for k in POS_FIELDMAPS])
         neg_types = reduce(operator.add, [smap.get(k, []) for k in NEG_FIELDMAPS])
-        pos = [d for d in filter(lambda x: sd in x and x[sd] in pos_types, dinfo) if nf in d]
-        neg = [d for d in filter(lambda x: sd in x and x[sd] in neg_types, dinfo) if nf in d]
+        pos = [d for d in filter(lambda x: sd in x and x[sd] in pos_types, jinfo) if nf in d]
+        neg = [d for d in filter(lambda x: sd in x and x[sd] in neg_types, jinfo) if nf in d]
         both = zip(pos,neg)
         if s_policy == "most_recent":
             pfs = []
@@ -813,13 +833,13 @@ class BIDSWrangler(BaseInterface):
                 it in x and
                 isinstance(x[it], list) and
                 len(x[it]) > 2 and
-                x[it][2].strip().lower() == "m", dinfo) # we want the 3rd field of image type to be 'm'
+                x[it][2].strip().lower() == "m", jinfo) # we want the 3rd field of image type to be 'm'
         phase_fs = filter(lambda x: sd in x and
                 x[sd] in smap.get("fieldmap_phase",[]) and
                 it in x and
                 isinstance(x[it], list) and
                 len(x[it]) > 2 and
-                x[it][2].strip().lower() == "p", dinfo) # we want the 3rd field of image type to be 'p'
+                x[it][2].strip().lower() == "p", jinfo) # we want the 3rd field of image type to be 'p'
         self.fieldmap_mag = [d[nf] for d in mag_fs if nf in d]
         self.fieldmap_ph = [d[nf] for d in phase_fs if nf in d]
         # calculate echo spacing for each of the bold images

@@ -75,9 +75,9 @@ def setup_conf():
     print "\nThe JSON template should be a format string for a glob which, " + \
           "when combined with an individual subject ID and an accession, will get us all of " + \
           "the subject's JSON files."
-    json_temp = raw_input("JSON template [data/raw_dicom/%s/*.json]: ")
+    json_temp = raw_input("JSON template [data/raw_json/%s/*.json]: ")
     json_temp = json_temp.strip()
-    json_temp = json_temp if json_temp else "data/raw_dicom/%s/*.json"
+    json_temp = json_temp if json_temp else "data/raw_json/%s/*.json"
     json_temp = json_temp if ".dcm" in json_temp else os.path.join(json_temp, "*.json")
     
     # get a list of subjects, json fork
@@ -95,10 +95,11 @@ def setup_conf():
     config.write()
     update_conf(name)
 
-def get_series_desc(dicom_path):
-    import dicom
-    d = dicom.read_file(dicom_path, stop_before_pixels=True)
-    sd = getattr(d, "SeriesDescription", None)
+def get_series_desc(json_path):
+    import json
+    read_file = open(json_path, 'r')
+    j = json.load(read_file)
+    sd = j["SeriesDescription"]
     return sd
 
 def templ_defaults_for_rez(rez):
@@ -126,7 +127,6 @@ def update_conf(conf_path):
     import os
     import sys
     from glob import glob
-    #import dicom
     import json
     from time import sleep
     from numpy import unique
@@ -140,7 +140,7 @@ def update_conf(conf_path):
         # get list of all sequence descriptions
         s = config["general"]["subject_dir"]
         t = config["general"]["json_template"] % "*"
-        jsons = glob(os.path.join(s,t))
+        jsons = glob(os.path.join(s, t))
         message = "\rChecking series names (this may several minutes) %s"
         json_count = len(jsons)
         pool = Pool(processes=min(15, int(round(cpu_count() * .75))))
@@ -218,7 +218,7 @@ def update_conf(conf_path):
     for i, key in enumerate(TEMPL_KEYS):
         config["templates"][key] = t_vals[i]
     if not def_t:
-        print "\nWhen finished, please open your config file to set the tamplate locations manually.\n"
+        print "\nWhen finished, please open your config file to set the template locations manually.\n"
     # config file locations (config_files)
     def_c = raw_input("\nUse default config files [y]/n?").strip() not in NO_WORDS
     c_vals = CONF_FILE_DEFAULTS if def_c else ['' for k in CONF_FILE_KEYS]

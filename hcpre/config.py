@@ -137,7 +137,7 @@ def update_conf(conf_path):
         # get list of all sequence descriptions
         s = config["general"]["subject_dir"]
         t = config["general"]["dicom_template"] % "*"
-        dicoms = glob(os.path.join(s,t))
+        dicoms = glob(os.path.join(s, t))
         message = "\rChecking series names (this may several minutes) %s"
         dcm_count = len(dicoms)
         pool = Pool(processes=min(15, int(round(cpu_count() * .75))))
